@@ -9,8 +9,8 @@
 import http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
-import { setupWorktreeAsync, removeWorktree, listWorktrees } from './worktree-manager';
-import { writeMCPConfigDirect, writeMCPConfigForGroup } from './mcp-config-generator';
+import { setupWorktreeAsync, removeWorktree, listWorktrees } from './worktree-manager.js';
+import { writeMCPConfigDirect, writeMCPConfigForGroup } from './mcp-config-generator.js';
 
 const GROUPS_DIR = process.env.GROUPS_DIR || '/opt/remote-agent/groups';
 
