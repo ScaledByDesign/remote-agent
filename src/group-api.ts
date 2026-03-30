@@ -1,24 +1,20 @@
-// ─── DELEGATE PATCH: Group Registration + Context Push HTTP API ───
-// Exposes POST /api/groups and POST /api/context/:folder on a configurable port
-// so Delegate can register task-specific groups at runtime and push rich CLAUDE.md
-// context to group folders.
+// ─── DELEGATE PATCH: Group Registration + Context Push + Worktree + MCP HTTP API ───
+// Exposes POST /api/groups, POST /api/context/:folder, POST /api/worktree/:folder,
+// and POST /api/mcp-config/:folder on a configurable port so Delegate can register
+// task-specific groups at runtime, push context, manage worktrees, and inject MCP config.
+//
+// This file is appended to NanoClaw/RemoteAgent's src/index.ts at deploy time.
+// It uses NanoClaw's internal registerGroup() and getAllRegisteredGroups().
 
 import http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
+import { setupWorktreeAsync, removeWorktree, listWorktrees } from './worktree-manager';
+import { writeMCPConfigDirect, writeMCPConfigForGroup } from './mcp-config-generator';
 
-import { getAllRegisteredGroups } from './db.js';
-import { logger } from './logger.js';
-import type { RegisteredGroup } from './types.js';
-import { GROUPS_DIR } from './config.js';
+const GROUPS_DIR = process.env.GROUPS_DIR || '/opt/remote-agent/groups';
 
-/**
- * Start the group + context HTTP API.
- * @param registerGroupFn — injected from index.ts (module-scoped function)
- */
-export function startGroupAPI(
-  registerGroupFn: (jid: string, group: RegisteredGroup) => void,
-): void {
+function startGroupAPI(): void {
   const PORT = parseInt(process.env.GROUP_API_PORT || '3001', 10);
   const VALID_TOKENS = [
     process.env.DELEGATE_API_KEY,
@@ -61,7 +57,7 @@ export function startGroupAPI(
             return;
           }
           const folder = data.folder || data.jid.replace(/[^a-zA-Z0-9-]/g, '-');
-          registerGroupFn(data.jid, {
+          registerGroup(data.jid, {
             name: data.name,
             folder,
             trigger: data.trigger || 'always',
@@ -126,14 +122,151 @@ export function startGroupAPI(
       return;
     }
 
+    // ─── Worktree: POST/DELETE/GET /api/worktree/:folder ───
+    const worktreeMatch = req.url?.match(/^\/api\/worktree\/([a-zA-Z0-9_-]+)$/);
+    if (worktreeMatch) {
+      const folder = decodeURIComponent(worktreeMatch[1]);
+
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        req.on('end', async () => {
+          try {
+            const data = JSON.parse(body);
+            if (!data.repoUrl) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'repoUrl required' }));
+              return;
+            }
+            const result = await setupWorktreeAsync(data.repoUrl, folder, {
+              branch: data.branch,
+              baseBranch: data.baseBranch,
+              githubToken: data.githubToken || process.env.GITHUB_TOKEN,
+            });
+            if (result.ok) {
+              logger.info({ folder, branch: result.branch }, 'Worktree created');
+              res.writeHead(201);
+            } else {
+              res.writeHead(500);
+            }
+            res.end(JSON.stringify(result));
+          } catch (err: any) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+        return;
+      }
+
+      if (req.method === 'DELETE') {
+        // Read metadata to find bare clone path
+        const metaPath = path.join(GROUPS_DIR, folder, 'worktree-meta.json');
+        let bareClonePath = '';
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+          bareClonePath = meta.bareClonePath;
+        } catch {}
+
+        if (!bareClonePath) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'No worktree found for this folder' }));
+          return;
+        }
+
+        const result = removeWorktree(bareClonePath, folder);
+        logger.info({ folder, ok: result.ok }, 'Worktree removed');
+        res.writeHead(result.ok ? 200 : 500);
+        res.end(JSON.stringify(result));
+        return;
+      }
+
+      if (req.method === 'GET') {
+        // List worktrees — needs a repoUrl query param or just list the folder's meta
+        const metaPath = path.join(GROUPS_DIR, folder, 'worktree-meta.json');
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+          res.writeHead(200);
+          res.end(JSON.stringify(meta));
+        } catch {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'No worktree found' }));
+        }
+        return;
+      }
+    }
+
+    // ─── Worktree List: GET /api/worktrees ───
+    if (req.method === 'GET' && req.url === '/api/worktrees') {
+      // Scan all groups for worktree metadata
+      const worktrees: any[] = [];
+      try {
+        const folders = fs.readdirSync(GROUPS_DIR);
+        for (const folder of folders) {
+          const metaPath = path.join(GROUPS_DIR, folder, 'worktree-meta.json');
+          try {
+            const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+            worktrees.push(meta);
+          } catch { /* no worktree for this group */ }
+        }
+      } catch { /* GROUPS_DIR doesn't exist yet */ }
+      res.writeHead(200);
+      res.end(JSON.stringify({ worktrees }));
+      return;
+    }
+
+    // ─── MCP Config: POST /api/mcp-config/:folder ───
+    const mcpMatch = req.url?.match(/^\/api\/mcp-config\/([a-zA-Z0-9_-]+)$/);
+    if (req.method === 'POST' && mcpMatch) {
+      const folder = decodeURIComponent(mcpMatch[1]);
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', async () => {
+        try {
+          const data = JSON.parse(body);
+
+          if (data.mcpServers) {
+            // Direct MCP config from Delegate
+            const result = writeMCPConfigDirect(folder, data.mcpServers, data.permissions);
+            logger.info({ folder, servers: Object.keys(data.mcpServers).length }, 'MCP config pushed directly');
+            res.writeHead(result.ok ? 200 : 500);
+            res.end(JSON.stringify(result));
+          } else if (data.workspaceId) {
+            // Generate from workspace ID
+            const result = await writeMCPConfigForGroup(folder, {
+              workspaceId: data.workspaceId,
+              extraServers: data.extraServers,
+              permissions: data.permissions,
+            });
+            logger.info({ folder, workspaceId: data.workspaceId, serverCount: result.serverCount }, 'MCP config generated from workspace');
+            res.writeHead(result.ok ? 200 : 500);
+            res.end(JSON.stringify(result));
+          } else {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'mcpServers or workspaceId required' }));
+          }
+        } catch (err: any) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
     // ─── Health: GET /api/health ───
     if (req.method === 'GET' && req.url === '/api/health') {
       let gitSha = 'unknown';
       try {
         gitSha = fs.readFileSync('/opt/remote-agent/.git/refs/heads/main', 'utf-8').trim().slice(0, 8);
       } catch {}
+      const worktreeCount = (() => {
+        try {
+          return fs.readdirSync(GROUPS_DIR).filter((f) => {
+            try { return fs.existsSync(path.join(GROUPS_DIR, f, 'worktree-meta.json')); } catch { return false; }
+          }).length;
+        } catch { return 0; }
+      })();
       res.writeHead(200);
-      res.end(JSON.stringify({ ok: true, gitSha, uptime: process.uptime() }));
+      res.end(JSON.stringify({ ok: true, gitSha, uptime: process.uptime(), worktreeCount }));
       return;
     }
 
