@@ -11,10 +11,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { setupWorktreeAsync, removeWorktree, listWorktrees } from './worktree-manager.js';
 import { writeMCPConfigDirect, writeMCPConfigForGroup } from './mcp-config-generator.js';
+import { logger } from './logger.js';
+import { getAllRegisteredGroups, setRegisteredGroup } from './db.js';
 
 const GROUPS_DIR = process.env.GROUPS_DIR || '/opt/remote-agent/groups';
 
-function startGroupAPI(): void {
+export function startGroupAPI(): void {
   const PORT = parseInt(process.env.GROUP_API_PORT || '3001', 10);
   const VALID_TOKENS = [
     process.env.DELEGATE_API_KEY,
@@ -57,7 +59,7 @@ function startGroupAPI(): void {
             return;
           }
           const folder = data.folder || data.jid.replace(/[^a-zA-Z0-9-]/g, '-');
-          registerGroup(data.jid, {
+          setRegisteredGroup(data.jid, {
             name: data.name,
             folder,
             trigger: data.trigger || 'always',

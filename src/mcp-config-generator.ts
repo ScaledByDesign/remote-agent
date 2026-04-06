@@ -57,7 +57,7 @@ async function fetchWorkspaceMCPServers(
 
     if (!res.ok) return [];
 
-    const data = await res.json();
+    const data: any = await res.json();
     return (data.mcpServers || data || []).filter(
       (s: WorkspaceMCPServer) => s.enabled
     );

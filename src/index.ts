@@ -730,7 +730,7 @@ async function main(): Promise<void> {
   recoverPendingMessages();
 
   // Start Group + Context HTTP API (Delegate integration)
-  startGroupAPI(registerGroup);
+  startGroupAPI();
 
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
