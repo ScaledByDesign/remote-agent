@@ -1,0 +1,114 @@
+# Caddy reverse proxy for Delegate infrastructure services
+# Auto-provisions TLS via Let's Encrypt
+#
+# Services:
+#   gateway.delegate.ws — Bifrost AI Gateway (LLM proxy + VK management)
+#   agent.delegate.ws   — NanoClaw agent server (status page + group API)
+#
+# Bifrost listens on localhost:4000 (systemd binary).
+# NanoClaw group API listens on localhost:3001.
+#
+# Credentials: admin / <bcrypt hash>
+# To change password: caddy hash-password --plaintext "newpassword"
+{
+	email admin@delegate.ws
+}
+
+# ── Shared security headers ──
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		-Server
+		defer
+	}
+}
+
+# ── Bifrost AI Gateway ──
+gateway.delegate.ws {
+	import security_headers
+
+	# Protect governance UI and API behind basic auth
+	@admin {
+		path / /api/governance/* /workspace/* /_next/* /favicon.ico
+	}
+	basic_auth @admin {
+		admin <BCRYPT_HASH>
+	}
+
+	# Allowed without auth: /anthropic/*, /openai/*, /health, /v1/*
+	reverse_proxy localhost:4000 {
+		health_uri /health
+		health_interval 30s
+		health_timeout 5s
+		header_up X-Real-IP {remote_host}
+
+		# Required for SSE streaming (agent responses, LLM proxy)
+		flush_interval -1
+
+		# Prevent reconnect storms during config reloads
+		stream_close_delay 5m
+		stream_timeout 1h
+
+		# Passive health: mark down after 3 failures within 30s
+		fail_duration 30s
+		max_fails 3
+		unhealthy_status 502 503 504
+	}
+
+	log {
+		output file /var/log/caddy/gateway.log {
+			roll_size 10MiB
+			roll_keep 5
+			roll_keep_for 720h
+		}
+	}
+}
+
+# ── NanoClaw Agent Server ──
+agent.delegate.ws {
+	import security_headers
+
+	# Group registration API — Bearer token auth (no basic auth)
+	@groupapi {
+		path /api/groups
+	}
+	handle @groupapi {
+		reverse_proxy localhost:3001
+	}
+
+	# Health endpoint — no auth
+	handle /health {
+		header Content-Type application/json
+		respond `{"service":"nanoclaw","status":"ok","version":"v5","mode":"poll"}` 200
+	}
+
+	# Everything else behind basic auth
+	@protected {
+		not path /api/groups
+		not path /health
+	}
+	basic_auth @protected {
+		admin <BCRYPT_HASH>
+	}
+
+	handle /api/* {
+		respond "NanoClaw v5 uses polling. Use Delegate endpoints." 410
+	}
+
+	handle {
+		header Content-Type "text/html; charset=utf-8"
+		respond `<!DOCTYPE html><html><head><title>NanoClaw</title><style>body{font-family:system-ui;background:#0a0a0a;color:#e5e5e5;max-width:600px;margin:60px auto;padding:20px}h1{font-size:1.5rem;border-bottom:1px solid #333;padding-bottom:12px}.i{background:#111;border:1px solid #222;border-radius:8px;padding:16px;margin:12px 0}.l{color:#888;font-size:.85rem}a{color:#60a5fa}code{background:#1a1a1a;padding:2px 6px;border-radius:4px;font-size:.9rem}</style></head><body><h1>NanoClaw Agent Orchestrator</h1><div class=i><div class=l>Architecture</div><div>v5 polling-based + group registration API (port 3001)</div></div><div class=i><div class=l>Channel</div><div>Polls <code>delegate.ws/api/agent/channel/poll</code></div></div><div class=i><div class=l>Bifrost Gateway</div><div><a href=https://gateway.delegate.ws/health>gateway.delegate.ws</a></div></div><div class=i><div class=l>Server</div><div><code>159.89.226.182</code></div></div></body></html>` 200
+	}
+
+	log {
+		output file /var/log/caddy/agent.log {
+			roll_size 10MiB
+			roll_keep 5
+			roll_keep_for 720h
+		}
+	}
+}

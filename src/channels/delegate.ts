@@ -17,7 +17,7 @@ import * as path from "path";
 import { registerChannel, type ChannelOpts } from './registry.js';
 import type { Channel } from '../types.js';
 
-const POLL_INTERVAL = parseInt(process.env.DELEGATE_POLL_INTERVAL || '1500', 10);
+const POLL_INTERVAL = parseInt(process.env.DELEGATE_POLL_INTERVAL || '15000', 10);
 const DELEGATE_URL = (process.env.DELEGATE_URL || 'https://delegate.ws').replace(/\/$/, '');
 const DELEGATE_API_KEY = process.env.DELEGATE_API_KEY || '';
 

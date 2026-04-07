@@ -1,0 +1,57 @@
+{
+    "providers": {
+        "openai": {
+            "keys": [
+                {
+                    "name": "openai-primary",
+                    "value": "${OPENAI_API_KEY}",
+                    "models": [],
+                    "weight": 1.0
+                }
+            ],
+            "network_config": {
+                "max_retries": 3,
+                "default_request_timeout_in_seconds": 120
+            }
+        },
+        "anthropic": {
+            "keys": [
+                {
+                    "name": "anthropic-primary",
+                    "value": "${ANTHROPIC_API_KEY}",
+                    "models": [],
+                    "weight": 1.0
+                }
+            ],
+            "network_config": {
+                "max_retries": 3,
+                "retry_backoff_initial_ms": 2,
+                "retry_backoff_max_ms": 8000,
+                "default_request_timeout_in_seconds": 120
+            }
+        },
+        "openai-chat-only": {
+            "keys": [
+                {
+                    "name": "openai-chat",
+                    "value": "${OPENAI_API_KEY}",
+                    "models": [],
+                    "weight": 1.0
+                }
+            ],
+            "network_config": {
+                "max_retries": 3,
+                "default_request_timeout_in_seconds": 120
+            },
+            "custom_provider_config": {
+                "base_provider_type": "openai",
+                "allowed_requests": {
+                    "chat_completion": true,
+                    "chat_completion_stream": true,
+                    "responses": false,
+                    "responses_stream": false
+                }
+            }
+        }
+    }
+}
